@@ -1,4 +1,5 @@
-require('dotenv').config()
+#!/usr/local/bin/node
+
 const AWS = require('aws-sdk')
 const path = require('path')
 const { randomBytes } = require('crypto')
@@ -6,12 +7,15 @@ const ec2 = new AWS.EC2({ region: 'us-east-1' })
 const { spawn } = require('child_process')
 const { promisify } = require('util')
 const fs = require('fs')
-
+const dotenv = require('dotenv')
 const access = promisify(fs.access)
 const write = promisify(fs.writeFile)
 const chmod = promisify(fs.chmod)
 
 const HOME = process.env[process.platform === 'win32' ? 'USERPROFILE' : 'HOME']
+
+dotenv.config({ path: path.join(HOME, '.redis-env') })
+
 const USER = 'ec2-user'
 const KEY_NAME = 'ec2-redis'
 const PRIVATE_KEY_PATH = path.join(HOME, '.ssh', KEY_NAME)
@@ -22,21 +26,19 @@ const genId = () => randomBytes(3).toString('hex')
 const wait = (ms = 3000) => new Promise((resolve, reject) => setTimeout(resolve, ms))
 
 const Gauge = require('gauge')
-let gauge = new Gauge()
+let gauge
 
 const createProgress = (label = 'create', n = 20) => {
+  gauge = new Gauge()
   gauge.show(label, 0)
-  let index = 1
+  let index = 0
   return {
     increment: (message) => {
       index++
       gauge.pulse(message)
       gauge.show(index, index / n)
     },
-    reset: () => {
-      gauge.hide()
-      index = 0
-    }
+    reset: () => {}
   }
 }
 
@@ -193,7 +195,7 @@ async function run () {
   const { PublicIpAddress, PublicDnsName } = await describeInstance({ InstanceId })
   const REDIS_URL = `redis://h:${Password}@${PublicDnsName}:${PORT}`
   await write(
-    path.join(__dirname, '../.env'), [
+    path.join(HOME, '.redis-env'), [
       `REDIS_PASSWORD=${Password}`,
       `INSTANCE_ID=${InstanceId}`,
       `IP_ADDRESS=${PublicIpAddress}`
@@ -201,7 +203,7 @@ async function run () {
       encoding: 'utf8'
     }
   )
-  progress.reset()
+  await gauge.disable()
   console.log('\n')
   console.log(REDIS_URL)
   console.log('\n')
@@ -214,7 +216,7 @@ async function run () {
   client.on('error', console.log.bind(console))
   await new Promise((resolve, reject) => client.on('connect', resolve))
   client.quit()
-  gauge.hide()
+  gauge.disable()
   process.exit()
 }
 

@@ -1,4 +1,9 @@
 {
+  "name": "redis-ec2",
+  "version": "0.0.1",
+  "bin": {
+    "redis-ec2": "src/index.js"
+  },
   "dependencies": {
     "aws-sdk": "^2.288.0",
     "dotenv": "^6.0.0",
