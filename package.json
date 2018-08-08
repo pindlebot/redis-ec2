@@ -2,6 +2,7 @@
   "dependencies": {
     "aws-sdk": "^2.288.0",
     "dotenv": "^6.0.0",
+    "gauge": "^2.7.4",
     "redis": "^2.8.0"
   },
   "devDependencies": {

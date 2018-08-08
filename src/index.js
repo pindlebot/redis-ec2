@@ -1,5 +1,4 @@
 require('dotenv').config()
-
 const AWS = require('aws-sdk')
 const path = require('path')
 const { randomBytes } = require('crypto')
@@ -7,10 +6,11 @@ const ec2 = new AWS.EC2({ region: 'us-east-1' })
 const { spawn } = require('child_process')
 const { promisify } = require('util')
 const fs = require('fs')
+
 const access = promisify(fs.access)
 const write = promisify(fs.writeFile)
 const chmod = promisify(fs.chmod)
-const read = promisify(fs.readFile)
+
 const HOME = process.env[process.platform === 'win32' ? 'USERPROFILE' : 'HOME']
 const USER = 'ec2-user'
 const KEY_NAME = 'ec2-redis'
@@ -21,7 +21,29 @@ const genId = () => randomBytes(3).toString('hex')
 
 const wait = (ms = 3000) => new Promise((resolve, reject) => setTimeout(resolve, ms))
 
+const Gauge = require('gauge')
+let gauge = new Gauge()
+
+const createProgress = (label = 'create', n = 20) => {
+  gauge.show(label, 0)
+  let index = 1
+  return {
+    increment: (message) => {
+      index++
+      gauge.pulse(message)
+      gauge.show(index, index / n)
+    },
+    reset: () => {
+      gauge.hide()
+      index = 0
+    }
+  }
+}
+
+let progress = createProgress()
+
 const addInboundRule = ({ GroupId, Port, Description }) => {
+  progress.increment('Adding inbound rules')
   return ec2.authorizeSecurityGroupIngress({
     GroupId: GroupId,
     IpPermissions: [{
@@ -37,6 +59,7 @@ const addInboundRule = ({ GroupId, Port, Description }) => {
 }
 
 const createSecurityGroup = () => {
+  progress.increment('Creating security group')
   const id = genId()
   const GroupName = `redis-t2.micro-${id}`
   return ec2.createSecurityGroup({
@@ -46,6 +69,7 @@ const createSecurityGroup = () => {
 }
 
 const createInstance = async ({ GroupId }) => {
+  progress.increment('Creating instance')
   const { Instances } = await ec2.runInstances({
     SecurityGroupIds: [GroupId],
     KeyName: KEY_NAME,
@@ -65,6 +89,7 @@ const createInstance = async ({ GroupId }) => {
 }
 
 const isRunning = async ({ InstanceId }) => {
+  progress.increment('Checking if instance is running')
   let { InstanceStatuses } = await ec2.describeInstanceStatus({ InstanceIds: [InstanceId] })
     .promise()
   let status = InstanceStatuses.length &&
@@ -74,15 +99,17 @@ const isRunning = async ({ InstanceId }) => {
 }
 
 const createKeyPair = () => {
+  progress.increment('Creating key pair')
   return ec2.createKeyPair({
     KeyName: KEY_NAME
   }).promise()
 }
 
 const exec = (cmd, args) => {
-  console.log(['-i', PRIVATE_KEY_PATH, ...args].join(' '))
-  let child = spawn(cmd, ['-i', PRIVATE_KEY_PATH, ...args], { shell: true })
-  child.stderr.on('data', data => {})
+  args = ['-i', PRIVATE_KEY_PATH, '-o', '"StrictHostKeyChecking no"'].concat(args)
+  let child = spawn(cmd, args, { shell: true })
+  child.stdout.on('data', data => progress.increment(data.toString().slice(0, 10) + '...'))
+  child.stderr.on('data', data => progress.increment(data.toString().slice(0, 10) + '...'))
 
   return new Promise((resolve, reject) => {
     child.on('error', reject)
@@ -106,6 +133,8 @@ async function install ({ PublicIpAddress, Password }) {
     await wait()
     ready = await trySSH({ PublicIpAddress })
   }
+  progress.increment('Installing redis')
+
   const bootstrap = 'https://raw.githubusercontent.com/unshift/redis-ec2/master/bin/bootstrap.sh'
   await remote.ssh([
     '-o',
@@ -124,6 +153,7 @@ const describeInstance = ({ InstanceId }) =>
     .then(({ Reservations }) => Reservations[0].Instances[0])
 
 const trySSH = ({ PublicIpAddress }) => {
+  progress.increment('Checking if SSH is ready')
   let child = spawn(
     'ssh', [
       '-i',
@@ -171,29 +201,23 @@ async function run () {
       encoding: 'utf8'
     }
   )
+  progress.reset()
+  console.log('\n')
   console.log(REDIS_URL)
-  await install({ Password, KeyName: KEY_NAME, PublicIpAddress })
+  console.log('\n')
+
+  progress = createProgress('install', 1000)
+  await install({ Password, PublicIpAddress })
+  progress.increment('Installed redis successfully')
   await wait()
   const client = require('redis').createClient(REDIS_URL)
-  // client.on('error', unwind)
   client.on('error', console.log.bind(console))
   await new Promise((resolve, reject) => client.on('connect', resolve))
-}
-
-async function test ({ PublicIpAddress }) {
-  let ready = false
-  while (!ready) {
-    await wait()
-    ready = await trySSH({ PublicIpAddress })
-    console.log({ ready })
-  }
+  client.quit()
+  gauge.hide()
+  process.exit()
 }
 
 if (require.main === module) {
-  install({ PublicIpAddress: '54.172.233.12000', Password: '123' })
-  // install({
-  //  PublicIpAddress: '54.172.233.120',
-  //  Password: '',
-  //  KeyName: 'ec2-redis'
-  // })
+  run()
 }
