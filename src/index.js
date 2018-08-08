@@ -4,7 +4,6 @@ const AWS = require('aws-sdk')
 const path = require('path')
 const { randomBytes } = require('crypto')
 const ec2 = new AWS.EC2({ region: 'us-east-1' })
-const { spawn } = require('child_process')
 const { promisify } = require('util')
 const fs = require('fs')
 const dotenv = require('dotenv')
@@ -70,7 +69,11 @@ const createSecurityGroup = () => {
   }).promise()
 }
 
-const createInstance = async ({ GroupId }) => {
+const script = fs.readFileSync(path.join(__dirname, '../bin/bootstrap.sh'), { encoding: 'utf8' })
+
+const createInstance = async ({ GroupId, Password }) => {
+  const UserData = Buffer.from(script.replace(/\${REDIS_PASSWORD}/, Password)).toString('base64')
+
   progress.increment('Creating instance')
   const { Instances } = await ec2.runInstances({
     SecurityGroupIds: [GroupId],
@@ -85,7 +88,8 @@ const createInstance = async ({ GroupId }) => {
         Key: 'detail',
         Value: 'redis'
       }]
-    }]
+    }],
+    UserData: UserData
   }).promise()
   return Instances[0].InstanceId
 }
@@ -107,44 +111,44 @@ const createKeyPair = () => {
   }).promise()
 }
 
-const exec = (cmd, args) => {
-  args = ['-i', PRIVATE_KEY_PATH, '-o', '"StrictHostKeyChecking no"'].concat(args)
-  let child = spawn(cmd, args, { shell: true })
-  child.stdout.on('data', data => progress.increment(data.toString().slice(0, 10) + '...'))
-  child.stderr.on('data', data => progress.increment(data.toString().slice(0, 10) + '...'))
+// const exec = (cmd, args) => {
+//  args = ['-i', PRIVATE_KEY_PATH, '-o', '"StrictHostKeyChecking no"'].concat(args)
+//  let child = spawn(cmd, args, { shell: true })
+//  child.stdout.on('data', data => progress.increment(data.toString().slice(0, 10) + '...'))
+//  child.stderr.on('data', data => progress.increment(data.toString().slice(0, 10) + '...'))
+//
+//  return new Promise((resolve, reject) => {
+//    child.on('error', reject)
+//    child.on('close', resolve)
+//  })
+// }
 
-  return new Promise((resolve, reject) => {
-    child.on('error', reject)
-    child.on('close', resolve)
-  })
-}
+// const remote = {
+//  scp: (args) => exec('scp', args),
+//  ssh: (args) => exec('ssh', args)
+// }
 
-const remote = {
-  scp: (args) => exec('scp', args),
-  ssh: (args) => exec('ssh', args)
-}
+// const createUnwind = ({ InstanceId, GroupId }) => async () => {
+//  await ec2.terminateInstances({ InstanceIds: [InstanceId] }).promise()
+//  await ec2.deleteSecurityGroup({ GroupId: GroupId }).promise()
+// }
 
-const createUnwind = ({ InstanceId, GroupId }) => async () => {
-  await ec2.terminateInstances({ InstanceIds: [InstanceId] }).promise()
-  await ec2.deleteSecurityGroup({ GroupId: GroupId }).promise()
-}
-
-async function install ({ PublicIpAddress, Password }) {
-  let ready = false
-  while (!ready) {
-    await wait()
-    ready = await trySSH({ PublicIpAddress })
-  }
-  progress.increment('Installing redis')
-
-  const bootstrap = 'https://raw.githubusercontent.com/unshift/redis-ec2/master/bin/bootstrap.sh'
-  await remote.ssh([
-    '-o',
-    '"StrictHostKeyChecking no"',
-    `${USER}@${PublicIpAddress}`,
-    `"cd /tmp && curl -o bootstrap.sh ${bootstrap}; sudo REDIS_PASSWORD=${Password} sh /tmp/bootstrap.sh"`
-  ])
-}
+// async function install ({ PublicIpAddress, Password }) {
+//  let ready = false
+//  while (!ready) {
+//    await wait()
+//    ready = await trySSH({ PublicIpAddress })
+//  }
+//  progress.increment('Installing redis')
+//
+//  const bootstrap = 'https://raw.githubusercontent.com/unshift/redis-ec2/master/bin/bootstrap.sh'
+//  await remote.ssh([
+//    '-o',
+//    '"StrictHostKeyChecking no"',
+//    `${USER}@${PublicIpAddress}`,
+//    `"cd /tmp && curl -o bootstrap.sh ${bootstrap}; sudo REDIS_PASSWORD=${Password} sh /tmp/bootstrap.sh"`
+//  ])
+// }
 
 const pathExists = () => access(PRIVATE_KEY_PATH)
   .then(() => true)
@@ -154,24 +158,24 @@ const describeInstance = ({ InstanceId }) =>
   ec2.describeInstances({ InstanceIds: [InstanceId] }).promise()
     .then(({ Reservations }) => Reservations[0].Instances[0])
 
-const trySSH = ({ PublicIpAddress }) => {
-  progress.increment('Checking if SSH is ready')
-  let child = spawn(
-    'ssh', [
-      '-i',
-      PRIVATE_KEY_PATH,
-      '-o',
-      '"StrictHostKeyChecking no"',
-      `${USER}@${PublicIpAddress}`,
-      '"whoami"'
-    ],
-    { shell: true }
-  )
-  return new Promise((resolve, reject) => {
-    child.stderr.on('data', () => resolve(false))
-    child.on('close', () => resolve(true))
-  })
-}
+// const trySSH = ({ PublicIpAddress }) => {
+//  progress.increment('Checking if SSH is ready')
+//  let child = spawn(
+//    'ssh', [
+//      '-i',
+//      PRIVATE_KEY_PATH,
+//      '-o',
+//      '"StrictHostKeyChecking no"',
+//      `${USER}@${PublicIpAddress}`,
+//      '"whoami"'
+//    ],
+//    { shell: true }
+//  )
+//  return new Promise((resolve, reject) => {
+//    child.stderr.on('data', () => resolve(false))
+//    child.on('close', () => resolve(true))
+//  })
+// }
 
 async function run () {
   const hasKey = await pathExists()
@@ -183,15 +187,14 @@ async function run () {
   const { GroupId } = await createSecurityGroup()
   await addInboundRule({ GroupId, Port: PORT, Description: 'redis' })
   await addInboundRule({ GroupId, Port: 22, Description: 'SSH' })
+  const Password = randomBytes(20).toString('hex')
+  const InstanceId = await createInstance({ GroupId, Password })
 
-  const InstanceId = await createInstance({ KeyName: KEY_NAME, GroupId })
-  const unwind = createUnwind({ InstanceId, GroupId })
   let running = false
   while (!running) {
     await wait()
     running = await isRunning({ InstanceId })
   }
-  const Password = randomBytes(20).toString('hex')
   const { PublicIpAddress, PublicDnsName } = await describeInstance({ InstanceId })
   const REDIS_URL = `redis://h:${Password}@${PublicDnsName}:${PORT}`
   await write(
@@ -204,19 +207,17 @@ async function run () {
     }
   )
   await gauge.disable()
-  console.log('\n')
   console.log(REDIS_URL)
-  console.log('\n')
 
-  progress = createProgress('install', 1000)
-  await install({ Password, PublicIpAddress })
-  progress.increment('Installed redis successfully')
-  await wait()
-  const client = require('redis').createClient(REDIS_URL)
-  client.on('error', console.log.bind(console))
-  await new Promise((resolve, reject) => client.on('connect', resolve))
-  client.quit()
-  gauge.disable()
+  // progress = createProgress('install', 1000)
+  // await install({ Password, PublicIpAddress })
+  // progress.increment('Installed redis successfully')
+  // await wait()
+  // const client = require('redis').createClient(REDIS_URL)
+  // client.on('error', console.log.bind(console))
+  // await new Promise((resolve, reject) => client.on('connect', resolve))
+  // client.quit()
+  // gauge.disable()
   process.exit()
 }
 
