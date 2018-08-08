@@ -1,3 +1,5 @@
+require('dotenv').config()
+
 const AWS = require('aws-sdk')
 const path = require('path')
 const { randomBytes } = require('crypto')
@@ -9,7 +11,6 @@ const access = promisify(fs.access)
 const write = promisify(fs.writeFile)
 const chmod = promisify(fs.chmod)
 const read = promisify(fs.readFile)
-
 const HOME = process.env[process.platform === 'win32' ? 'USERPROFILE' : 'HOME']
 const USER = 'ec2-user'
 const KEY_NAME = 'ec2-redis'
@@ -44,10 +45,10 @@ const createSecurityGroup = () => {
   }).promise()
 }
 
-const createInstance = async ({ KeyName, GroupId }) => {
+const createInstance = async ({ GroupId }) => {
   const { Instances } = await ec2.runInstances({
     SecurityGroupIds: [GroupId],
-    KeyName: KeyName,
+    KeyName: KEY_NAME,
     InstanceType: 't2.micro',
     ImageId: 'ami-4fffc834',
     MaxCount: 1,
@@ -74,20 +75,18 @@ const isRunning = async ({ InstanceId }) => {
 
 const createKeyPair = () => {
   return ec2.createKeyPair({
-    KeyName: 'ec2-redis'
+    KeyName: KEY_NAME
   }).promise()
 }
 
 const exec = (cmd, args) => {
-  let errors = []
+  console.log(['-i', PRIVATE_KEY_PATH, ...args].join(' '))
   let child = spawn(cmd, ['-i', PRIVATE_KEY_PATH, ...args], { shell: true })
-  child.stderr.on('data', data => {
-    errors.push(data.toString())
-  })
+  child.stderr.on('data', data => {})
 
   return new Promise((resolve, reject) => {
     child.on('error', reject)
-    child.on('close', () => errors.length ? reject(errors.join('\n')) : resolve())
+    child.on('close', resolve)
   })
 }
 
@@ -101,23 +100,19 @@ const createUnwind = ({ InstanceId, GroupId }) => async () => {
   await ec2.deleteSecurityGroup({ GroupId: GroupId }).promise()
 }
 
-async function install ({ KeyName, PublicIpAddress, Password }) {
-  // let bootstrap = await read(path.join(__dirname, '../bin/bootstrap.sh'), { encoding: 'utf8' })
-  // bootstrap += `sed -i 's/# requirepass foobar/requirepass ${Password}/' /etc/redis/6379.conf\nservice redis-server start`
-  // await write(path.join(__dirname, '../bin/redis.sh'), bootstrap, { encoding: 'utf8' })
-  // await remote.scp([
-  //  '-o',
-  //  '"StrictHostKeyChecking no"',
-  //  path.join(__dirname, '../bin/redis.sh'),
-  //  `${USER}@${PublicIpAddress}:/tmp`
-  // ]).catch(console.error.bind(console))
+async function install ({ PublicIpAddress, Password }) {
+  let ready = false
+  while (!ready) {
+    await wait()
+    ready = await trySSH({ PublicIpAddress })
+  }
   const bootstrap = 'https://raw.githubusercontent.com/unshift/redis-ec2/master/bin/bootstrap.sh'
   await remote.ssh([
     '-o',
     '"StrictHostKeyChecking no"',
     `${USER}@${PublicIpAddress}`,
-    `cd /tmp && wget ${bootstrap} && REDIS_PASSWORD=${Password} sudo sh /tmp/bootstrap.sh`
-  ]).catch(console.error.bind(console))
+    `"cd /tmp && curl -o bootstrap.sh ${bootstrap}; sudo REDIS_PASSWORD=${Password} sh /tmp/bootstrap.sh"`
+  ])
 }
 
 const pathExists = () => access(PRIVATE_KEY_PATH)
@@ -128,9 +123,23 @@ const describeInstance = ({ InstanceId }) =>
   ec2.describeInstances({ InstanceIds: [InstanceId] }).promise()
     .then(({ Reservations }) => Reservations[0].Instances[0])
 
-const trySSH = ({ PublicIpAddress }) => remote.ssh(['-o', '"StrictHostKeyChecking no"', `${USER}@${PublicIpAddress}`, 'whoami'])
-  .then(() => true)
-  .catch(() => false)
+const trySSH = ({ PublicIpAddress }) => {
+  let child = spawn(
+    'ssh', [
+      '-i',
+      PRIVATE_KEY_PATH,
+      '-o',
+      '"StrictHostKeyChecking no"',
+      `${USER}@${PublicIpAddress}`,
+      '"whoami"'
+    ],
+    { shell: true }
+  )
+  return new Promise((resolve, reject) => {
+    child.stderr.on('data', () => resolve(false))
+    child.on('close', () => resolve(true))
+  })
+}
 
 async function run () {
   const hasKey = await pathExists()
@@ -153,20 +162,38 @@ async function run () {
   const Password = randomBytes(20).toString('hex')
   const { PublicIpAddress, PublicDnsName } = await describeInstance({ InstanceId })
   const REDIS_URL = `redis://h:${Password}@${PublicDnsName}:${PORT}`
-
+  await write(
+    path.join(__dirname, '../.env'), [
+      `REDIS_PASSWORD=${Password}`,
+      `INSTANCE_ID=${InstanceId}`,
+      `IP_ADDRESS=${PublicIpAddress}`
+    ].join('\n'), {
+      encoding: 'utf8'
+    }
+  )
   console.log(REDIS_URL)
+  await install({ Password, KeyName: KEY_NAME, PublicIpAddress })
+  await wait()
+  const client = require('redis').createClient(REDIS_URL)
+  // client.on('error', unwind)
+  client.on('error', console.log.bind(console))
+  await new Promise((resolve, reject) => client.on('connect', resolve))
+}
 
+async function test ({ PublicIpAddress }) {
   let ready = false
   while (!ready) {
     await wait()
     ready = await trySSH({ PublicIpAddress })
+    console.log({ ready })
   }
-  await install({ Password, KeyName: KEY_NAME, PublicIpAddress })
-  const client = require('redis').createClient(REDIS_URL)
-  client.on('error', unwind)
-  await new Promise((resolve, reject) => client.on('connect', resolve))
 }
 
 if (require.main === module) {
-  run()
+  install({ PublicIpAddress: '54.172.233.12000', Password: '123' })
+  // install({
+  //  PublicIpAddress: '54.172.233.120',
+  //  Password: '',
+  //  KeyName: 'ec2-redis'
+  // })
 }
