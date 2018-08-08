@@ -18,6 +18,8 @@ sed -i 's/daemonize no/daemonize yes/' /etc/redis/6379.conf
 sed -i 's#logfile ""#logfile "/var/log/redis_6379.log"#' /etc/redis/6379.conf
 sed -i 's#dir ./#dir /var/redis/6379#' /etc/redis/6379.conf
 sed -i 's#REDIS_CONF_FILE="/etc/redis/redis.conf"#REDIS_CONF_FILE="/etc/redis/6379.conf"#' /etc/init.d/redis-server
+sed -i "s/# requirepass foobar/requirepass ${REDIS_PASSWORD}/" /etc/redis/6379.conf
 service iptables save
 service iptables stop
 chkconfig iptables off
+service redis-server start

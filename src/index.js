@@ -102,20 +102,21 @@ const createUnwind = ({ InstanceId, GroupId }) => async () => {
 }
 
 async function install ({ KeyName, PublicIpAddress, Password }) {
-  let bootstrap = await read(path.join(__dirname, '../bin/bootstrap.sh'), { encoding: 'utf8' })
-  bootstrap += `sed -i 's/# requirepass foobar/requirepass ${Password}/' /etc/redis/6379.conf\nservice redis-server start`
-  await write(path.join(__dirname, '../bin/redis.sh'), bootstrap, { encoding: 'utf8' })
-  await remote.scp([
-    '-o',
-    '"StrictHostKeyChecking no"',
-    path.join(__dirname, '../bin/redis.sh'),
-    `${USER}@${PublicIpAddress}:/tmp`
-  ]).catch(console.error.bind(console))
+  // let bootstrap = await read(path.join(__dirname, '../bin/bootstrap.sh'), { encoding: 'utf8' })
+  // bootstrap += `sed -i 's/# requirepass foobar/requirepass ${Password}/' /etc/redis/6379.conf\nservice redis-server start`
+  // await write(path.join(__dirname, '../bin/redis.sh'), bootstrap, { encoding: 'utf8' })
+  // await remote.scp([
+  //  '-o',
+  //  '"StrictHostKeyChecking no"',
+  //  path.join(__dirname, '../bin/redis.sh'),
+  //  `${USER}@${PublicIpAddress}:/tmp`
+  // ]).catch(console.error.bind(console))
+  const bootstrap = 'https://raw.githubusercontent.com/unshift/redis-ec2/master/bin/bootstrap.sh'
   await remote.ssh([
     '-o',
     '"StrictHostKeyChecking no"',
     `${USER}@${PublicIpAddress}`,
-    'sudo sh /tmp/redis.sh'
+    `cd /tmp && wget ${bootstrap} && REDIS_PASSWORD=${Password} sudo sh /tmp/bootstrap.sh`
   ]).catch(console.error.bind(console))
 }
 
@@ -152,6 +153,7 @@ async function run () {
   const Password = randomBytes(20).toString('hex')
   const { PublicIpAddress, PublicDnsName } = await describeInstance({ InstanceId })
   const REDIS_URL = `redis://h:${Password}@${PublicDnsName}:${PORT}`
+
   console.log(REDIS_URL)
 
   let ready = false
