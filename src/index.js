@@ -15,7 +15,6 @@ const HOME = process.env[process.platform === 'win32' ? 'USERPROFILE' : 'HOME']
 
 dotenv.config({ path: path.join(HOME, '.redis-env') })
 
-const USER = 'ec2-user'
 const KEY_NAME = 'ec2-redis'
 const PRIVATE_KEY_PATH = path.join(HOME, '.ssh', KEY_NAME)
 const PORT = 6379
