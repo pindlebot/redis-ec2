@@ -4,6 +4,10 @@
   "bin": {
     "redis-ec2": "bin/redis-ec2.js"
   },
+  "repository": {
+    "type": "git",
+     "url": "https://github.com/unshift/redis-ec2.git"
+  },
   "main": "bin/redis-ec2.js",
   "scripts": {
     "lint": "standard src/*.js | snazzy"
