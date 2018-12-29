@@ -12,7 +12,7 @@ const createInstance = async ({ GroupId, Password }) => {
     SecurityGroupIds: [GroupId],
     KeyName: KEY_NAME,
     InstanceType: 't2.micro',
-    ImageId: 'ami-4fffc834',
+    ImageId: 'ami-0922553b7b0369273',
     MaxCount: 1,
     MinCount: 1,
     TagSpecifications: [{
